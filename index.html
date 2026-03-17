@@ -450,11 +450,16 @@
         await renderer.xr.setSession(session);
         updateLineResolution();
 
+        // Prova reference space più adatta in AR, con fallback.
+        // Se fallisce, useremo quella gestita da Three.js durante il frame loop.
         try {
-          state.refSpace = await session.requestReferenceSpace("local");
+          state.refSpace = await session.requestReferenceSpace("local-floor");
         } catch {
-          // fallback: three gestisce comunque; ma per hand poses serve qualcosa
-          state.refSpace = null;
+          try {
+            state.refSpace = await session.requestReferenceSpace("local");
+          } catch {
+            state.refSpace = null;
+          }
         }
 
         ui.debugBox.textContent = "XR: running (immersive-ar + hand-tracking)";
@@ -477,7 +482,7 @@
       });
 
       function onXRFrame(_t, frame) {
-        if (!frame || !state.xrSession || !state.refSpace) {
+        if (!frame || !state.xrSession) {
           renderer.render(scene, camera);
           return;
         }
@@ -485,7 +490,11 @@
         updateLineResolution();
 
         const session = state.xrSession;
-        const refSpace = state.refSpace;
+        const refSpace = state.refSpace || renderer.xr.getReferenceSpace?.();
+        if (!refSpace) {
+          renderer.render(scene, camera);
+          return;
+        }
 
         let rightSeen = false;
         let leftSeen = false;
