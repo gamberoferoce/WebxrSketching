@@ -4,6 +4,14 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>WebXR Hand Draw (AR) - Three.js</title>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+        }
+      }
+    </script>
     <style>
       html,
       body {
@@ -149,10 +157,10 @@
     </div>
 
     <script type="module">
-      import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js";
-      import { Line2 } from "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/lines/Line2.js";
-      import { LineGeometry } from "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/lines/LineGeometry.js";
-      import { LineMaterial } from "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/lines/LineMaterial.js";
+      import * as THREE from "three";
+      import { Line2 } from "three/addons/lines/Line2.js";
+      import { LineGeometry } from "three/addons/lines/LineGeometry.js";
+      import { LineMaterial } from "three/addons/lines/LineMaterial.js";
 
       const ui = {
         enterArBtn: document.getElementById("enterArBtn"),
