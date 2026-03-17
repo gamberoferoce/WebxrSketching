@@ -230,6 +230,16 @@
       scene.add(drawings);
 
       const _tmpV2 = new THREE.Vector2();
+      const _tmpTip = new THREE.Vector3();
+
+      // Marker 2D-like per capire se il tracking funziona
+      const tipMarker = new THREE.Mesh(
+        new THREE.SphereGeometry(0.006, 16, 16),
+        new THREE.MeshBasicMaterial({ color: state.drawColor, transparent: true, opacity: 0.9 })
+      );
+      tipMarker.visible = false;
+      tipMarker.frustumCulled = false;
+      scene.add(tipMarker);
 
       function clearDrawings() {
         const keep = [];
@@ -320,7 +330,8 @@
           transparent: true,
           opacity: 0.95,
           alphaToCoverage: true,
-          depthTest: true,
+          // In AR spesso vuoi che il tratto rimanga sempre visibile
+          depthTest: false,
           depthWrite: false,
         });
 
@@ -498,6 +509,7 @@
 
         let rightSeen = false;
         let leftSeen = false;
+        let rightTip = null;
 
         for (const src of session.inputSources) {
           if (!src.hand) continue;
@@ -509,6 +521,7 @@
             const pinch = computePinch(frame, hand, refSpace);
 
             if (!pinch.tip) continue;
+            rightTip = pinch.tip;
 
             if (!state.right.pinching) {
               if (pinch.pinchingOn) {
@@ -572,6 +585,19 @@
         if (!leftSeen) {
           state.left.pinching = false;
         }
+
+        // Aggiorna marker per debug/feedback: se vedi il dot, il tracking/joint funziona.
+        if (rightSeen && rightTip) {
+          tipMarker.visible = true;
+          tipMarker.material.color.setHex(state.drawColor);
+          tipMarker.position.copy(rightTip);
+        } else {
+          tipMarker.visible = false;
+        }
+
+        ui.debugBox.textContent = `XR: running | rightSeen=${rightSeen} pinch=${state.right.pinching} | leftSeen=${leftSeen} | color=#${state.drawColor
+          .toString(16)
+          .padStart(6, "0")}`;
 
         renderer.render(scene, camera);
       }
