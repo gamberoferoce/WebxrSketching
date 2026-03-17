@@ -279,7 +279,14 @@
       function getJointPose(frame, jointSpace, refSpace) {
         if (!frame || !jointSpace || !refSpace) return null;
         try {
-          return frame.getJointPose(jointSpace, refSpace) || null;
+          // Alcuni runtime/browsers espongono solo getPose() per gli XRSpace dei joint.
+          if (typeof frame.getJointPose === "function") {
+            return frame.getJointPose(jointSpace, refSpace) || null;
+          }
+          if (typeof frame.getPose === "function") {
+            return frame.getPose(jointSpace, refSpace) || null;
+          }
+          return null;
         } catch {
           return null;
         }
@@ -425,8 +432,10 @@
         setStatus("Avvio AR…", "#ffd60a");
 
         const sessionInit = {
-          requiredFeatures: ["local", "hand-tracking"],
-          optionalFeatures: ["dom-overlay", "bounded-floor", "local-floor", "anchors", "layers"],
+          // NOTE: "local" non è una feature WebXR; i reference space si richiedono via requestReferenceSpace.
+          // Per hand tracking serve la feature "hand-tracking".
+          requiredFeatures: ["hand-tracking"],
+          optionalFeatures: ["local-floor", "bounded-floor", "dom-overlay", "anchors", "layers"],
           domOverlay: { root: document.body },
         };
 
@@ -457,7 +466,7 @@
         ui.enterArBtn.textContent = "Exit AR";
         ui.clearBtn.disabled = false;
 
-        renderer.xr.setReferenceSpaceType("local");
+        renderer.xr.setReferenceSpaceType("local-floor");
         await renderer.xr.setSession(session);
         updateLineResolution();
 
@@ -510,9 +519,12 @@
         let rightSeen = false;
         let leftSeen = false;
         let rightTip = null;
+        let handSources = 0;
+        let jointPoseOk = false;
 
         for (const src of session.inputSources) {
           if (!src.hand) continue;
+          handSources++;
 
           const hand = src.hand;
 
@@ -522,6 +534,7 @@
 
             if (!pinch.tip) continue;
             rightTip = pinch.tip;
+            jointPoseOk = true;
 
             if (!state.right.pinching) {
               if (pinch.pinchingOn) {
@@ -595,7 +608,9 @@
           tipMarker.visible = false;
         }
 
-        ui.debugBox.textContent = `XR: running | rightSeen=${rightSeen} pinch=${state.right.pinching} | leftSeen=${leftSeen} | color=#${state.drawColor
+        ui.debugBox.textContent = `XR: running | hands=${handSources} jointPose=${jointPoseOk} getJointPose=${typeof frame.getJointPose === "function"} getPose=${
+          typeof frame.getPose === "function"
+        } | rightSeen=${rightSeen} pinch=${state.right.pinching} | leftSeen=${leftSeen} | color=#${state.drawColor
           .toString(16)
           .padStart(6, "0")}`;
 
