@@ -221,6 +221,8 @@
       const drawings = new THREE.Group();
       scene.add(drawings);
 
+      const _tmpV2 = new THREE.Vector2();
+
       function clearDrawings() {
         const keep = [];
         for (const child of drawings.children) {
@@ -323,8 +325,10 @@
       }
 
       function updateLineResolution() {
+        // In XR la dimensione effettiva del framebuffer può differire dalla viewport window.
+        renderer.getDrawingBufferSize(_tmpV2);
         for (const child of drawings.children) {
-          if (child?.material?.resolution) child.material.resolution.set(window.innerWidth, window.innerHeight);
+          if (child?.material?.resolution) child.material.resolution.set(_tmpV2.x, _tmpV2.y);
         }
       }
 
@@ -470,6 +474,8 @@
           return;
         }
 
+        updateLineResolution();
+
         const session = state.xrSession;
         const refSpace = state.refSpace;
 
@@ -555,6 +561,7 @@
 
       // Render non-XR (preview)
       function animateFlat() {
+        updateLineResolution();
         renderer.render(scene, camera);
         requestAnimationFrame(animateFlat);
       }
