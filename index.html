@@ -43,6 +43,15 @@
         padding: 10px 12px;
         max-width: 920px;
       }
+      /* Un filo più grande e leggibile in XR */
+      @media (min-width: 420px) {
+        .panel {
+          padding: 12px 14px;
+        }
+        button {
+          padding: 10px 14px;
+        }
+      }
       .row {
         display: flex;
         align-items: center;
@@ -73,7 +82,7 @@
         border-radius: 999px;
         border: 1px solid rgba(255, 255, 255, 0.18);
         background: rgba(0, 0, 0, 0.35);
-        font-size: 13px;
+        font-size: 14px;
         white-space: nowrap;
       }
       .dot {
@@ -89,7 +98,7 @@
       }
       .help {
         line-height: 1.35;
-        font-size: 13px;
+        font-size: 14px;
       }
       .help b {
         font-weight: 800;
@@ -121,10 +130,16 @@
         </span>
         <span class="badge mono">Color: <span id="colorHex">#ff2d55</span></span>
       </div>
-      <div class="panel help" id="helpBox">
-        <b>Mano destra</b>: pinch (pollice+indice) = disegna nell’aria.<br />
-        <b>Mano sinistra</b>: pinch = cambia colore (ciclo).<br />
-        Suggerimento: disegna lentamente per linee più pulite.
+      <div class="panel row" aria-label="Indicatori mani">
+        <span class="badge" title="Colore attivo (mano destra)">
+          <span id="activeColorDot" class="dot"></span>
+          <span><b>Destra</b> disegna</span>
+        </span>
+        <span class="badge" title="Suggerimento (mano sinistra)">
+          <span class="dot" style="background: rgba(255, 255, 255, 0.28)"></span>
+          <span><b>Sinistra</b> cambia colore</span>
+        </span>
+      </div>
       </div>
     </div>
 
@@ -135,6 +150,9 @@
 
     <script type="module">
       import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js";
+      import { Line2 } from "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/lines/Line2.js";
+      import { LineGeometry } from "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/lines/LineGeometry.js";
+      import { LineMaterial } from "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/lines/LineMaterial.js";
 
       const ui = {
         enterArBtn: document.getElementById("enterArBtn"),
@@ -142,6 +160,7 @@
         statusDot: document.getElementById("statusDot"),
         statusText: document.getElementById("statusText"),
         colorHex: document.getElementById("colorHex"),
+        activeColorDot: document.getElementById("activeColorDot"),
         debugBox: document.getElementById("debugBox"),
       };
 
@@ -161,7 +180,7 @@
         colorIndex: 0,
         drawColor: COLORS[0],
 
-        right: { pinching: false, line: null },
+        right: { pinching: false, line: null, smoothTip: null, lastRawTip: null },
         left: { pinching: false, lastColorChangeMs: 0 },
       };
 
@@ -174,6 +193,7 @@
         state.colorIndex = (idx + COLORS.length) % COLORS.length;
         state.drawColor = COLORS[state.colorIndex];
         ui.colorHex.textContent = `#${state.drawColor.toString(16).padStart(6, "0")}`;
+        ui.activeColorDot.style.background = `#${state.drawColor.toString(16).padStart(6, "0")}`;
       }
       setColor(0);
 
@@ -187,11 +207,13 @@
         alpha: true,
         preserveDrawingBuffer: false,
       });
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2.5));
       renderer.setSize(window.innerWidth, window.innerHeight);
       renderer.xr.enabled = true;
       renderer.setClearColor(0x000000, 0);
       document.body.appendChild(renderer.domElement);
+      // Migliora nitidezza in XR (se supportato)
+      renderer.xr.setFramebufferScaleFactor?.(1.5);
 
       const light = new THREE.HemisphereLight(0xffffff, 0x222233, 1.0);
       scene.add(light);
@@ -222,6 +244,7 @@
         camera.aspect = window.innerWidth / window.innerHeight;
         camera.updateProjectionMatrix();
         renderer.setSize(window.innerWidth, window.innerHeight);
+        updateLineResolution();
       });
 
       function isXRSupported() {
@@ -264,47 +287,81 @@
         return { dist, pinchingOn: dist < PINCH_ON, pinchingOff: dist > PINCH_OFF, tip: b };
       }
 
-      function createLine(color) {
-        const geom = new THREE.BufferGeometry();
-        const positions = new Float32Array(3 * 4096); // fino a 4096 punti
-        geom.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-        geom.setDrawRange(0, 0);
-        geom.userData.count = 0;
+      const DRAW = {
+        maxPoints: 4096,
+        // Spessore leggermente maggiore, leggibile in XR (pixel)
+        lineWidthPx: 5,
+        // Distanza minima fra punti (metri)
+        minStepM: 0.003,
+        // Smoothing (0 = nessuno, 1 = super-smoothed)
+        smoothAlpha: 0.4,
+      };
 
-        const mat = new THREE.LineBasicMaterial({
+      const _tmpV3 = new THREE.Vector3();
+
+      function createLine(color) {
+        const geom = new LineGeometry();
+        geom.setPositions([]);
+        geom.userData.points = [];
+
+        const mat = new LineMaterial({
           color,
+          linewidth: DRAW.lineWidthPx,
           transparent: true,
           opacity: 0.95,
+          alphaToCoverage: true,
+          depthTest: true,
+          depthWrite: false,
         });
-        const line = new THREE.Line(geom, mat);
+
+        const line = new Line2(geom, mat);
         line.frustumCulled = false;
+        line.computeLineDistances();
+        // Risoluzione necessaria per linewidth corretto
+        mat.resolution.set(window.innerWidth, window.innerHeight);
         return line;
       }
 
-      function appendPoint(line, p) {
-        const geom = line.geometry;
-        const attr = geom.getAttribute("position");
-        const maxPoints = attr.count;
-        const count = geom.userData.count || 0;
-        if (count >= maxPoints) return;
+      function updateLineResolution() {
+        for (const child of drawings.children) {
+          if (child?.material?.resolution) child.material.resolution.set(window.innerWidth, window.innerHeight);
+        }
+      }
 
-        const i = count * 3;
-        attr.array[i + 0] = p.x;
-        attr.array[i + 1] = p.y;
-        attr.array[i + 2] = p.z;
-        geom.userData.count = count + 1;
-        geom.setDrawRange(0, count + 1);
-        attr.needsUpdate = true;
-        geom.computeBoundingSphere();
+      function appendPoint(line, p) {
+        const points = line.geometry.userData.points;
+        if (!points) return;
+        if (points.length >= DRAW.maxPoints) return;
+
+        points.push(p.x, p.y, p.z);
+        line.geometry.setPositions(points);
+        line.geometry.computeBoundingSphere();
+        line.computeLineDistances();
       }
 
       function getLastPoint(line) {
-        const geom = line.geometry;
-        const attr = geom.getAttribute("position");
-        const count = geom.userData.count || 0;
-        if (count <= 0) return null;
-        const i = (count - 1) * 3;
-        return new THREE.Vector3(attr.array[i], attr.array[i + 1], attr.array[i + 2]);
+        const points = line.geometry.userData.points;
+        if (!points || points.length < 3) return null;
+        const i = points.length - 3;
+        return _tmpV3.set(points[i], points[i + 1], points[i + 2]);
+      }
+
+      function smoothPoint(prevSmoothed, nextRaw, alpha) {
+        if (!prevSmoothed) return nextRaw.clone();
+        return prevSmoothed.lerp(nextRaw, alpha);
+      }
+
+      function appendWithInterpolation(line, from, to, maxStep) {
+        const d = from.distanceTo(to);
+        if (d <= maxStep) {
+          appendPoint(line, to);
+          return;
+        }
+        const steps = Math.min(16, Math.ceil(d / maxStep));
+        for (let s = 1; s <= steps; s++) {
+          const t = s / steps;
+          appendPoint(line, _tmpV3.copy(from).lerp(to, t));
+        }
       }
 
       function isRightHand(inputSource) {
@@ -379,6 +436,7 @@
 
         renderer.xr.setReferenceSpaceType("local");
         await renderer.xr.setSession(session);
+        updateLineResolution();
 
         try {
           state.refSpace = await session.requestReferenceSpace("local");
@@ -435,17 +493,27 @@
                 const line = createLine(state.drawColor);
                 drawings.add(line);
                 state.right.line = line;
+                state.right.smoothTip = pinch.tip.clone();
+                state.right.lastRawTip = pinch.tip.clone();
                 appendPoint(line, pinch.tip);
               }
             } else {
               if (pinch.pinchingOff) {
                 state.right.pinching = false;
                 state.right.line = null;
+                state.right.smoothTip = null;
+                state.right.lastRawTip = null;
               } else if (state.right.line) {
                 const last = getLastPoint(state.right.line);
-                const minStep = 0.006; // metri tra punti
-                if (!last || last.distanceTo(pinch.tip) >= minStep) {
-                  appendPoint(state.right.line, pinch.tip);
+                const raw = pinch.tip;
+                const smoothed = smoothPoint(state.right.smoothTip, raw, DRAW.smoothAlpha);
+                state.right.smoothTip = smoothed;
+
+                const minStep = DRAW.minStepM;
+                if (!last) {
+                  appendPoint(state.right.line, smoothed);
+                } else if (last.distanceTo(smoothed) >= minStep) {
+                  appendWithInterpolation(state.right.line, last.clone(), smoothed, minStep);
                 }
               }
             }
@@ -475,6 +543,8 @@
         if (!rightSeen) {
           state.right.pinching = false;
           state.right.line = null;
+          state.right.smoothTip = null;
+          state.right.lastRawTip = null;
         }
         if (!leftSeen) {
           state.left.pinching = false;
