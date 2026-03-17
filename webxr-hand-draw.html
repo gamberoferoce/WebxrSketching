@@ -1,0 +1,509 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>WebXR Hand Draw (AR) - Three.js</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #000;
+        color: #fff;
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      }
+      canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+        touch-action: none;
+      }
+      .ui {
+        position: fixed;
+        left: 12px;
+        right: 12px;
+        top: 12px;
+        z-index: 10;
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        justify-content: space-between;
+        pointer-events: none;
+      }
+      .panel {
+        pointer-events: auto;
+        background: rgba(0, 0, 0, 0.55);
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+        border-radius: 12px;
+        padding: 10px 12px;
+        max-width: 920px;
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      button {
+        appearance: none;
+        border: 1px solid rgba(255, 255, 255, 0.22);
+        background: rgba(255, 255, 255, 0.08);
+        color: #fff;
+        border-radius: 10px;
+        padding: 10px 12px;
+        font-size: 14px;
+        font-weight: 600;
+      }
+      button:active {
+        transform: translateY(1px);
+      }
+      button[disabled] {
+        opacity: 0.5;
+      }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 10px;
+        border-radius: 999px;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        background: rgba(0, 0, 0, 0.35);
+        font-size: 13px;
+        white-space: nowrap;
+      }
+      .dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: #999;
+      }
+      .mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+        font-size: 12px;
+        opacity: 0.95;
+      }
+      .help {
+        line-height: 1.35;
+        font-size: 13px;
+      }
+      .help b {
+        font-weight: 800;
+      }
+      .footer {
+        position: fixed;
+        left: 12px;
+        right: 12px;
+        bottom: 12px;
+        z-index: 10;
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        pointer-events: none;
+      }
+      .footer .panel {
+        pointer-events: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="ui">
+      <div class="panel row">
+        <button id="enterArBtn">Enter AR</button>
+        <button id="clearBtn" disabled>Clear</button>
+        <span class="badge">
+          <span id="statusDot" class="dot"></span>
+          <span id="statusText">Idle</span>
+        </span>
+        <span class="badge mono">Color: <span id="colorHex">#ff2d55</span></span>
+      </div>
+      <div class="panel help" id="helpBox">
+        <b>Mano destra</b>: pinch (pollice+indice) = disegna nell’aria.<br />
+        <b>Mano sinistra</b>: pinch = cambia colore (ciclo).<br />
+        Suggerimento: disegna lentamente per linee più pulite.
+      </div>
+    </div>
+
+    <div class="footer">
+      <div class="panel mono" id="debugBox">XR: not started</div>
+      <div class="panel mono">Richiede HTTPS o <span class="mono">localhost</span>. WebXR + hand-tracking.</div>
+    </div>
+
+    <script type="module">
+      import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js";
+
+      const ui = {
+        enterArBtn: document.getElementById("enterArBtn"),
+        clearBtn: document.getElementById("clearBtn"),
+        statusDot: document.getElementById("statusDot"),
+        statusText: document.getElementById("statusText"),
+        colorHex: document.getElementById("colorHex"),
+        debugBox: document.getElementById("debugBox"),
+      };
+
+      const COLORS = [
+        0xff2d55, // pink
+        0x34c759, // green
+        0x0a84ff, // blue
+        0xff9f0a, // orange
+        0xffffff, // white
+        0xaf52de, // purple
+        0x00e5ff, // cyan
+      ];
+
+      const state = {
+        xrSession: null,
+        refSpace: null,
+        colorIndex: 0,
+        drawColor: COLORS[0],
+
+        right: { pinching: false, line: null },
+        left: { pinching: false, lastColorChangeMs: 0 },
+      };
+
+      function setStatus(text, color) {
+        ui.statusText.textContent = text;
+        ui.statusDot.style.background = color;
+      }
+
+      function setColor(idx) {
+        state.colorIndex = (idx + COLORS.length) % COLORS.length;
+        state.drawColor = COLORS[state.colorIndex];
+        ui.colorHex.textContent = `#${state.drawColor.toString(16).padStart(6, "0")}`;
+      }
+      setColor(0);
+
+      const scene = new THREE.Scene();
+
+      const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 50);
+      scene.add(camera);
+
+      const renderer = new THREE.WebGLRenderer({
+        antialias: true,
+        alpha: true,
+        preserveDrawingBuffer: false,
+      });
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.xr.enabled = true;
+      renderer.setClearColor(0x000000, 0);
+      document.body.appendChild(renderer.domElement);
+
+      const light = new THREE.HemisphereLight(0xffffff, 0x222233, 1.0);
+      scene.add(light);
+
+      const drawings = new THREE.Group();
+      scene.add(drawings);
+
+      function clearDrawings() {
+        const keep = [];
+        for (const child of drawings.children) {
+          keep.push(child);
+        }
+        for (const child of keep) {
+          drawings.remove(child);
+          child.geometry?.dispose?.();
+          if (child.material) {
+            if (Array.isArray(child.material)) child.material.forEach((m) => m.dispose?.());
+            else child.material.dispose?.();
+          }
+        }
+      }
+
+      ui.clearBtn.addEventListener("click", () => {
+        clearDrawings();
+      });
+
+      window.addEventListener("resize", () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      });
+
+      function isXRSupported() {
+        return !!navigator.xr;
+      }
+
+      function asVec3FromPose(pose) {
+        const { position } = pose.transform;
+        return new THREE.Vector3(position.x, position.y, position.z);
+      }
+
+      function getJointPose(frame, jointSpace, refSpace) {
+        if (!frame || !jointSpace || !refSpace) return null;
+        try {
+          return frame.getJointPose(jointSpace, refSpace) || null;
+        } catch {
+          return null;
+        }
+      }
+
+      function computePinch(frame, hand, refSpace) {
+        // Pinch = distanza pollice-tip <-> indice-tip
+        const thumbTip = hand.get("thumb-tip");
+        const indexTip = hand.get("index-finger-tip");
+        if (!thumbTip || !indexTip) return { pinching: false, tip: null };
+
+        const thumbPose = getJointPose(frame, thumbTip, refSpace);
+        const indexPose = getJointPose(frame, indexTip, refSpace);
+        if (!thumbPose || !indexPose) return { pinching: false, tip: null };
+
+        const a = asVec3FromPose(thumbPose);
+        const b = asVec3FromPose(indexPose);
+        const dist = a.distanceTo(b);
+
+        // Soglie in metri: un po' "morbide" per stabilità
+        const PINCH_ON = 0.018;
+        const PINCH_OFF = 0.026;
+
+        // Ritorno anche la posizione del tip indice come "pennino"
+        return { dist, pinchingOn: dist < PINCH_ON, pinchingOff: dist > PINCH_OFF, tip: b };
+      }
+
+      function createLine(color) {
+        const geom = new THREE.BufferGeometry();
+        const positions = new Float32Array(3 * 4096); // fino a 4096 punti
+        geom.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+        geom.setDrawRange(0, 0);
+        geom.userData.count = 0;
+
+        const mat = new THREE.LineBasicMaterial({
+          color,
+          transparent: true,
+          opacity: 0.95,
+        });
+        const line = new THREE.Line(geom, mat);
+        line.frustumCulled = false;
+        return line;
+      }
+
+      function appendPoint(line, p) {
+        const geom = line.geometry;
+        const attr = geom.getAttribute("position");
+        const maxPoints = attr.count;
+        const count = geom.userData.count || 0;
+        if (count >= maxPoints) return;
+
+        const i = count * 3;
+        attr.array[i + 0] = p.x;
+        attr.array[i + 1] = p.y;
+        attr.array[i + 2] = p.z;
+        geom.userData.count = count + 1;
+        geom.setDrawRange(0, count + 1);
+        attr.needsUpdate = true;
+        geom.computeBoundingSphere();
+      }
+
+      function getLastPoint(line) {
+        const geom = line.geometry;
+        const attr = geom.getAttribute("position");
+        const count = geom.userData.count || 0;
+        if (count <= 0) return null;
+        const i = (count - 1) * 3;
+        return new THREE.Vector3(attr.array[i], attr.array[i + 1], attr.array[i + 2]);
+      }
+
+      function isRightHand(inputSource) {
+        return inputSource.handedness === "right";
+      }
+
+      function isLeftHand(inputSource) {
+        return inputSource.handedness === "left";
+      }
+
+      function cycleColor() {
+        setColor(state.colorIndex + 1);
+      }
+
+      async function startAR() {
+        if (!isXRSupported()) {
+          setStatus("WebXR non disponibile", "#ff3b30");
+          ui.debugBox.textContent = "XR: navigator.xr missing";
+          return;
+        }
+
+        const immersiveMode = "immersive-ar";
+
+        let supported = false;
+        try {
+          supported = await navigator.xr.isSessionSupported(immersiveMode);
+        } catch {
+          supported = false;
+        }
+
+        if (!supported) {
+          setStatus("AR non supportata qui", "#ff9f0a");
+          ui.debugBox.textContent =
+            "XR: immersive-ar not supported. Su Quest serve browser/flag compatibili con AR passthrough.";
+          return;
+        }
+
+        setStatus("Avvio AR…", "#ffd60a");
+
+        const sessionInit = {
+          requiredFeatures: ["local", "hand-tracking"],
+          optionalFeatures: ["dom-overlay", "bounded-floor", "local-floor", "anchors", "layers"],
+          domOverlay: { root: document.body },
+        };
+
+        let session;
+        try {
+          session = await navigator.xr.requestSession(immersiveMode, sessionInit);
+        } catch (e) {
+          setStatus("Errore avvio AR", "#ff3b30");
+          ui.debugBox.textContent = `XR: requestSession failed: ${String(e?.message || e)}`;
+          return;
+        }
+
+        state.xrSession = session;
+
+        session.addEventListener("end", () => {
+          state.xrSession = null;
+          state.refSpace = null;
+          state.right.pinching = false;
+          state.right.line = null;
+          state.left.pinching = false;
+          ui.enterArBtn.textContent = "Enter AR";
+          ui.clearBtn.disabled = true;
+          setStatus("Idle", "#999");
+          ui.debugBox.textContent = "XR: ended";
+          renderer.setAnimationLoop(null);
+        });
+
+        ui.enterArBtn.textContent = "Exit AR";
+        ui.clearBtn.disabled = false;
+
+        renderer.xr.setReferenceSpaceType("local");
+        await renderer.xr.setSession(session);
+
+        try {
+          state.refSpace = await session.requestReferenceSpace("local");
+        } catch {
+          // fallback: three gestisce comunque; ma per hand poses serve qualcosa
+          state.refSpace = null;
+        }
+
+        ui.debugBox.textContent = "XR: running (immersive-ar + hand-tracking)";
+        setStatus("AR attiva", "#34c759");
+
+        renderer.setAnimationLoop(onXRFrame);
+      }
+
+      async function endAR() {
+        if (state.xrSession) {
+          try {
+            await state.xrSession.end();
+          } catch {}
+        }
+      }
+
+      ui.enterArBtn.addEventListener("click", () => {
+        if (state.xrSession) endAR();
+        else startAR();
+      });
+
+      function onXRFrame(_t, frame) {
+        if (!frame || !state.xrSession || !state.refSpace) {
+          renderer.render(scene, camera);
+          return;
+        }
+
+        const session = state.xrSession;
+        const refSpace = state.refSpace;
+
+        let rightSeen = false;
+        let leftSeen = false;
+
+        for (const src of session.inputSources) {
+          if (!src.hand) continue;
+
+          const hand = src.hand;
+
+          if (isRightHand(src)) {
+            rightSeen = true;
+            const pinch = computePinch(frame, hand, refSpace);
+
+            if (!pinch.tip) continue;
+
+            if (!state.right.pinching) {
+              if (pinch.pinchingOn) {
+                state.right.pinching = true;
+                const line = createLine(state.drawColor);
+                drawings.add(line);
+                state.right.line = line;
+                appendPoint(line, pinch.tip);
+              }
+            } else {
+              if (pinch.pinchingOff) {
+                state.right.pinching = false;
+                state.right.line = null;
+              } else if (state.right.line) {
+                const last = getLastPoint(state.right.line);
+                const minStep = 0.006; // metri tra punti
+                if (!last || last.distanceTo(pinch.tip) >= minStep) {
+                  appendPoint(state.right.line, pinch.tip);
+                }
+              }
+            }
+          } else if (isLeftHand(src)) {
+            leftSeen = true;
+            const pinch = computePinch(frame, hand, refSpace);
+            const now = performance.now();
+
+            if (!state.left.pinching) {
+              if (pinch.pinchingOn) {
+                state.left.pinching = true;
+                // debounce per evitare ripetizioni durante lo stesso pinch
+                if (now - state.left.lastColorChangeMs > 250) {
+                  cycleColor();
+                  state.left.lastColorChangeMs = now;
+                }
+              }
+            } else {
+              if (pinch.pinchingOff) {
+                state.left.pinching = false;
+              }
+            }
+          }
+        }
+
+        // Se le mani non sono "viste" per un po', evita stati bloccati
+        if (!rightSeen) {
+          state.right.pinching = false;
+          state.right.line = null;
+        }
+        if (!leftSeen) {
+          state.left.pinching = false;
+        }
+
+        renderer.render(scene, camera);
+      }
+
+      // Render non-XR (preview)
+      function animateFlat() {
+        renderer.render(scene, camera);
+        requestAnimationFrame(animateFlat);
+      }
+      animateFlat();
+
+      // UI init
+      if (!isXRSupported()) {
+        setStatus("WebXR non disponibile", "#ff3b30");
+        ui.enterArBtn.disabled = true;
+        ui.debugBox.textContent = "XR: navigator.xr missing (serve Quest Browser o Chrome Android con WebXR)";
+      } else {
+        setStatus("Pronto", "#999");
+        ui.debugBox.textContent = "XR: ready";
+      }
+
+      // Piccola scorciatoia tastiera per debug da desktop
+      window.addEventListener("keydown", (e) => {
+        if (e.key.toLowerCase() === "c") clearDrawings();
+      });
+    </script>
+  </body>
+</html>
